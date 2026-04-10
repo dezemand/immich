@@ -383,7 +383,7 @@ export class MediaService extends BaseService {
 
     let isTransparent = false;
     if (!extracted && mimeTypes.canBeTransparent(asset.originalPath)) {
-      ({ isTransparent } = await this.mediaRepository.getImageMetadata(asset.originalPath));
+      ({ isTransparent } = await this.mediaRepository.getImageMetadata(source as string));
     }
 
     return {

@@ -34,6 +34,8 @@ export class S3AppStorageBackend implements IAppStorageBackend {
       endpoint: opts.endpoint,
       forcePathStyle: opts.forcePathStyle,
       useAccelerateEndpoint: opts.useAccelerate,
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED',
       credentials:
         opts.accessKeyId && opts.secretAccessKey
           ? { accessKeyId: opts.accessKeyId, secretAccessKey: opts.secretAccessKey }
