@@ -110,53 +110,58 @@ export class FileUploadInterceptor implements NestInterceptor {
 
     if (useS3) {
       // Stream directly to S3 and compute checksum
-      const uploadReq = asUploadRequest(request, file);
-      const uploadFilename = this.assetService.getUploadFilename(uploadReq);
-      const uploadFolder = this.assetService.getUploadFolder(uploadReq);
-      const uploadPath = `${uploadFolder}/${uploadFilename}`;
+      try {
+        (file as ImmichMulterFile).uuid = randomUUID();
+        const uploadReq = asUploadRequest(request, file);
+        const uploadFilename = this.assetService.getUploadFilename(uploadReq);
+        const uploadFolder = this.assetService.getUploadFolder(uploadReq);
+        const uploadPath = `${uploadFolder}/${uploadFilename}`;
 
-      const s3c = env.storage.s3!;
-      const s3 = new S3AppStorageBackend({
-        endpoint: s3c.endpoint,
-        region: s3c.region || 'us-east-1',
-        bucket: s3c.bucket!,
-        prefix: s3c.prefix,
-        forcePathStyle: s3c.forcePathStyle,
-        useAccelerate: s3c.useAccelerate,
-        accessKeyId: s3c.accessKeyId,
-        secretAccessKey: s3c.secretAccessKey,
-        sse: s3c.sse as any,
-        sseKmsKeyId: s3c.sseKmsKeyId,
-      });
+        const s3c = env.storage.s3!;
+        const s3 = new S3AppStorageBackend({
+          endpoint: s3c.endpoint,
+          region: s3c.region || 'us-east-1',
+          bucket: s3c.bucket!,
+          prefix: s3c.prefix,
+          forcePathStyle: s3c.forcePathStyle,
+          useAccelerate: s3c.useAccelerate,
+          accessKeyId: s3c.accessKeyId,
+          secretAccessKey: s3c.secretAccessKey,
+          sse: s3c.sse as any,
+          sseKmsKeyId: s3c.sseKmsKeyId,
+        });
 
-      const hash = createHash('sha1');
-      let bytes = 0;
-      const monitor = new PassThrough();
-      monitor.on('data', (chunk) => {
-        hash.update(chunk as Buffer);
-        bytes += (chunk as Buffer).length;
-      });
+        const hash = createHash('sha1');
+        let bytes = 0;
+        const monitor = new PassThrough();
+        monitor.on('data', (chunk) => {
+          hash.update(chunk as Buffer);
+          bytes += (chunk as Buffer).length;
+        });
 
-      s3
-        .writeStream(uploadPath)
-        .then(({ stream, done }) => {
-          file.stream.pipe(monitor).pipe(stream);
-          stream.on('error', (err) => {
-            hash.destroy();
-            callback(err as Error);
-          });
-          stream.on('finish', async () => {
-            try {
-              await done();
-              const checksum = hash.digest();
-              callback(null, { path: uploadPath, size: bytes, checksum } as Partial<ImmichFile>);
-            } catch (err) {
+        s3
+          .writeStream(uploadPath)
+          .then(({ stream, done }) => {
+            file.stream.pipe(monitor).pipe(stream);
+            stream.on('error', (err) => {
               hash.destroy();
               callback(err as Error);
-            }
-          });
-        })
-        .catch((err) => callback(err as Error));
+            });
+            stream.on('finish', async () => {
+              try {
+                await done();
+                const checksum = hash.digest();
+                callback(null, { path: uploadPath, size: bytes, checksum } as Partial<ImmichFile>);
+              } catch (err) {
+                hash.destroy();
+                callback(err as Error);
+              }
+            });
+          })
+          .catch((err) => callback(err as Error));
+      } catch (error: Error | any) {
+        callback(error);
+      }
       return;
     }
 
