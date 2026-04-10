@@ -29,6 +29,7 @@ import {
   isValidDatabaseRoutineBackupName,
   UnsupportedPostgresError,
 } from 'src/utils/database-backups';
+import { S3AppStorageBackend } from 'src/storage/s3-backend';
 import { ImmichFileResponse } from 'src/utils/file';
 import { handlePromiseError } from 'src/utils/misc';
 
@@ -53,6 +54,36 @@ export class DatabaseBackupService {
   }
 
   private backupLock = false;
+  private _s3: S3AppStorageBackend | null | undefined;
+
+  private getS3(): S3AppStorageBackend | null {
+    if (this._s3 !== undefined) {
+      return this._s3;
+    }
+    const env = this.configRepository.getEnv();
+    const s3c = env.storage.s3;
+    if (env.storage.engine === 's3' && s3c && s3c.bucket) {
+      this._s3 = new S3AppStorageBackend({
+        endpoint: s3c.endpoint,
+        region: s3c.region || 'us-east-1',
+        bucket: s3c.bucket,
+        prefix: s3c.prefix,
+        forcePathStyle: s3c.forcePathStyle,
+        useAccelerate: s3c.useAccelerate,
+        accessKeyId: s3c.accessKeyId,
+        secretAccessKey: s3c.secretAccessKey,
+        sse: s3c.sse as any,
+        sseKmsKeyId: s3c.sseKmsKeyId,
+      });
+    } else {
+      this._s3 = null;
+    }
+    return this._s3;
+  }
+
+  private isS3Path(p: string): boolean {
+    return p.startsWith('s3://');
+  }
 
   @OnEvent({ name: 'ConfigInit', workers: [ImmichWorker.Microservices] })
   async onConfigInit({
@@ -225,9 +256,14 @@ export class DatabaseBackupService {
 
     this.logger.log(`Database Backup Starting. Database Version: ${databaseMajorVersion}`);
 
+    const backupsFolder = StorageCore.getBaseFolder(StorageFolder.Backups);
     const filename = `${filenamePrefix}immich-db-backup-${DateTime.now().toFormat("yyyyLLdd'T'HHmmss")}-v${serverVersion.toString()}-pg${databaseVersion.split(' ')[0]}.sql.gz`;
-    const backupFilePath = path.join(StorageCore.getBaseFolder(StorageFolder.Backups), filename);
+    const backupFilePath = this.isS3Path(backupsFolder)
+      ? `${backupsFolder.replace(/\/+$/, '')}/${filename}`
+      : path.join(backupsFolder, filename);
     const temporaryFilePath = `${backupFilePath}.tmp`;
+
+    const s3 = this.getS3();
 
     try {
       const pgdump = this.processRepository.spawnDuplexStream(bin, args, {
@@ -238,15 +274,29 @@ export class DatabaseBackupService {
       });
 
       const gzip = this.processRepository.spawnDuplexStream('gzip', ['--rsyncable']);
-      const fileStream = this.storageRepository.createWriteStream(temporaryFilePath);
 
-      await pipeline(pgdump, gzip, fileStream);
-      await this.storageRepository.rename(temporaryFilePath, backupFilePath);
+      if (s3 && this.isS3Path(backupsFolder)) {
+        const { stream: s3Stream, done } = await s3.writeStream(temporaryFilePath);
+        await pipeline(pgdump, gzip, s3Stream);
+        await done();
+        await s3.copyObject(temporaryFilePath, backupFilePath);
+        await s3.deleteObject(temporaryFilePath);
+      } else {
+        const fileStream = this.storageRepository.createWriteStream(temporaryFilePath);
+        await pipeline(pgdump, gzip, fileStream);
+        await this.storageRepository.rename(temporaryFilePath, backupFilePath);
+      }
     } catch (error) {
       this.logger.error(`Database Backup Failure: ${error}`);
-      await this.storageRepository
-        .unlink(temporaryFilePath)
-        .catch((error) => this.logger.error(`Failed to delete failed backup file: ${error}`));
+      if (s3 && this.isS3Path(backupsFolder)) {
+        await s3.deleteObject(temporaryFilePath).catch((e) =>
+          this.logger.error(`Failed to delete failed backup object: ${e}`),
+        );
+      } else {
+        await this.storageRepository
+          .unlink(temporaryFilePath)
+          .catch((error) => this.logger.error(`Failed to delete failed backup file: ${error}`));
+      }
       throw error;
     }
 
@@ -282,7 +332,10 @@ export class DatabaseBackupService {
 
   async listBackups(): Promise<DatabaseBackupListResponseDto> {
     const backupsFolder = StorageCore.getBaseFolder(StorageFolder.Backups);
-    const files = await this.storageRepository.readdir(backupsFolder);
+    const s3 = this.getS3();
+    const files = s3 && this.isS3Path(backupsFolder)
+      ? await s3.list(backupsFolder)
+      : await this.storageRepository.readdir(backupsFolder);
     const timezone = DateTime.local().zoneName;
 
     const validFiles = files
@@ -292,6 +345,11 @@ export class DatabaseBackupService {
 
     const backups = await Promise.all(
       validFiles.map(async (filename) => {
+        if (s3 && this.isS3Path(backupsFolder)) {
+          const fullPath = `${backupsFolder.replace(/\/+$/, '')}/${filename}`;
+          const head = await s3.head(fullPath);
+          return { filename, filesize: head.size, timezone };
+        }
         const stats = await this.storageRepository.stat(path.join(backupsFolder, filename));
         return { filename, filesize: stats.size, timezone };
       }),
@@ -309,7 +367,14 @@ export class DatabaseBackupService {
       throw new BadRequestException('Invalid backup name!');
     }
 
-    await Promise.all(files.map((filename) => this.storageRepository.unlink(path.join(backupsFolder, filename))));
+    const s3 = this.getS3();
+    await Promise.all(files.map((filename) => {
+      if (s3 && this.isS3Path(backupsFolder)) {
+        const fullPath = `${backupsFolder.replace(/\/+$/, '')}/${filename}`;
+        return s3.deleteObject(fullPath);
+      }
+      return this.storageRepository.unlink(path.join(backupsFolder, filename));
+    }));
   }
 
   async cleanupDatabaseBackups() {
@@ -328,7 +393,10 @@ export class DatabaseBackupService {
     );
 
     const backupsFolder = StorageCore.getBaseFolder(StorageFolder.Backups);
-    const files = await this.storageRepository.readdir(backupsFolder);
+    const s3 = this.getS3();
+    const files = s3 && this.isS3Path(backupsFolder)
+      ? await s3.list(backupsFolder)
+      : await this.storageRepository.readdir(backupsFolder);
     const backups = files
       .filter((filename) => isValidDatabaseRoutineBackupName(filename))
       .toSorted()
@@ -339,7 +407,12 @@ export class DatabaseBackupService {
     toDelete.push(...failedBackups);
 
     for (const file of toDelete) {
-      await this.storageRepository.unlink(path.join(backupsFolder, file));
+      if (s3 && this.isS3Path(backupsFolder)) {
+        const fullPath = `${backupsFolder.replace(/\/+$/, '')}/${file}`;
+        await s3.deleteObject(fullPath);
+      } else {
+        await this.storageRepository.unlink(path.join(backupsFolder, file));
+      }
     }
 
     this.logger.debug(`Database Backup Cleanup Finished, deleted ${toDelete.length} backups`);

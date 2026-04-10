@@ -58,6 +58,7 @@
 - [Features](#features)
 - [Translations](https://docs.immich.app/developer/translations)
 - [Contributing](https://docs.immich.app/overview/support-the-project)
+- [S3/MinIO Storage](https://docs.immich.app/administration/s3-storage)
 
 ## Demo
 

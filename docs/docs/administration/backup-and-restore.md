@@ -122,6 +122,10 @@ Restoring a backup from a different Immich version may require database migratio
 
 ### Restore Process {#restore-process}
 
+:::note S3 storage engine
+If you have enabled the S3 storage engine, database dumps are written under `s3://<bucket>/<optional-prefix>/backups/` and retention/cleanup is handled by Immich in that prefix.
+:::
+
 During restoration, Immich will:
 
 1. Create a backup of the current database (restore point)

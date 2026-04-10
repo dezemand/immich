@@ -114,8 +114,11 @@ export class AssetMediaService extends BaseService {
     if (fieldName === UploadFieldName.PROFILE_DATA) {
       folder = StorageCore.getFolderLocation(StorageFolder.Profile, auth.user.id);
     }
-
-    this.storageRepository.mkdirSync(folder);
+    // For S3 engine, folders are logical and do not need local creation
+    const env = this.configRepository.getEnv();
+    if ((env.storage.engine || 'local') !== 's3') {
+      this.storageRepository.mkdirSync(folder);
+    }
 
     return folder;
   }
@@ -400,7 +403,10 @@ export class AssetMediaService extends BaseService {
       ? this.assetRepository.upsertFile({ assetId, type: AssetFileType.Sidecar, path: sidecarPath })
       : this.assetRepository.deleteFile({ assetId, type: AssetFileType.Sidecar }));
 
-    await this.storageRepository.utimes(file.originalPath, new Date(), new Date(dto.fileModifiedAt));
+    const isS3 = (this.configRepository.getEnv().storage.engine || 'local') === 's3';
+    if (!file.originalPath.startsWith('s3://') && !isS3) {
+      await this.storageRepository.utimes(file.originalPath, new Date(), new Date(dto.fileModifiedAt));
+    }
     await this.assetRepository.upsertExif(
       { assetId, fileSizeInByte: file.size },
       { lockedPropertiesBehavior: 'override' },
@@ -476,9 +482,14 @@ export class AssetMediaService extends BaseService {
         path: sidecarFile.originalPath,
         type: AssetFileType.Sidecar,
       });
+    }
+    const isS3 = (this.configRepository.getEnv().storage.engine || 'local') === 's3';
+    if (sidecarFile && !sidecarFile.originalPath.startsWith('s3://') && !isS3) {
       await this.storageRepository.utimes(sidecarFile.originalPath, new Date(), new Date(dto.fileModifiedAt));
     }
-    await this.storageRepository.utimes(file.originalPath, new Date(), new Date(dto.fileModifiedAt));
+    if (!file.originalPath.startsWith('s3://') && !isS3) {
+      await this.storageRepository.utimes(file.originalPath, new Date(), new Date(dto.fileModifiedAt));
+    }
     await this.assetRepository.upsertExif(
       { assetId: asset.id, fileSizeInByte: file.size },
       { lockedPropertiesBehavior: 'override' },

@@ -33,6 +33,7 @@ describe(DownloadService.name, () => {
     it('should skip asset ids that could not be found', async () => {
       const archiveMock = {
         addFile: vitest.fn(),
+        addStream: vitest.fn(),
         finalize: vitest.fn(),
         stream: new Readable(),
       };
@@ -53,6 +54,7 @@ describe(DownloadService.name, () => {
     it('should log a warning if the original path could not be resolved', async () => {
       const archiveMock = {
         addFile: vitest.fn(),
+        addStream: vitest.fn(),
         finalize: vitest.fn(),
         stream: new Readable(),
       };
@@ -78,6 +80,7 @@ describe(DownloadService.name, () => {
     it('should download an archive', async () => {
       const archiveMock = {
         addFile: vitest.fn(),
+        addStream: vitest.fn(),
         finalize: vitest.fn(),
         stream: new Readable(),
       };
@@ -101,6 +104,7 @@ describe(DownloadService.name, () => {
     it('should handle duplicate file names', async () => {
       const archiveMock = {
         addFile: vitest.fn(),
+        addStream: vitest.fn(),
         finalize: vitest.fn(),
         stream: new Readable(),
       };
@@ -123,6 +127,7 @@ describe(DownloadService.name, () => {
     it('should be deterministic', async () => {
       const archiveMock = {
         addFile: vitest.fn(),
+        addStream: vitest.fn(),
         finalize: vitest.fn(),
         stream: new Readable(),
       };
@@ -145,6 +150,7 @@ describe(DownloadService.name, () => {
     it('should resolve symlinks', async () => {
       const archiveMock = {
         addFile: vitest.fn(),
+        addStream: vitest.fn(),
         finalize: vitest.fn(),
         stream: new Readable(),
       };
