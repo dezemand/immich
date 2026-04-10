@@ -561,6 +561,8 @@ export class MediaService extends BaseService {
     const thumbnailPath = StorageCore.getPersonThumbnailPath({ id, ownerId });
     this.storageCore.ensureFolders(thumbnailPath);
 
+    const stagedOut = await this.stageOutputIfS3(thumbnailPath);
+
     const thumbnailOptions: GenerateThumbnailOptions = {
       colorspace: image.colorspace,
       format: ImageFormat.Jpeg,
@@ -580,7 +582,8 @@ export class MediaService extends BaseService {
       ],
     };
 
-    await this.mediaRepository.generateThumbnail(decodedImage, thumbnailOptions, thumbnailPath);
+    await this.mediaRepository.generateThumbnail(decodedImage, thumbnailOptions, stagedOut.localPath);
+    await stagedOut.finalize();
     if (stagedCleanup) {
       await stagedCleanup();
     }
