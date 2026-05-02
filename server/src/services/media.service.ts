@@ -39,13 +39,14 @@ import {
   ImageDimensions,
   JobItem,
   JobOf,
+  TranscodeCommand,
   VideoFormat,
   VideoInterfaces,
   VideoStreamInfo,
 } from 'src/types';
 import { getAssetFile, getDimensions } from 'src/utils/asset.util';
 import { checkFaceVisibility, checkOcrVisibility } from 'src/utils/editor';
-import { BaseConfig, ThumbnailConfig } from 'src/utils/media';
+import { BaseConfig, stripThumbnailHeuristics, ThumbnailConfig } from 'src/utils/media';
 import { mimeTypes } from 'src/utils/mime-types';
 import { clamp, isFaceImportEnabled, isFacialRecognitionEnabled } from 'src/utils/misc';
 import { S3AppStorageBackend } from 'src/storage/s3-backend';
@@ -537,7 +538,13 @@ export class MediaService extends BaseService {
         this.logger.error(`Could not generate person thumbnail for video ${id}: missing preview path`);
         return JobStatus.Failed;
       }
-      inputImage = previewPath;
+      if (this.isS3Path(previewPath)) {
+        const staged = await this.stageInputIfS3(previewPath);
+        inputImage = staged.localPath;
+        stagedCleanup = staged.cleanup;
+      } else {
+        inputImage = previewPath;
+      }
     } else if (image.extractEmbedded && mimeTypes.isRaw(originalPath)) {
       const extracted = await this.extractImage(originalPath, image.preview.size);
       inputImage = extracted ? extracted.buffer : originalPath;
@@ -670,8 +677,8 @@ export class MediaService extends BaseService {
 
     const stagedPreview = await this.stageOutputIfS3(previewFile.path);
     const stagedThumb = await this.stageOutputIfS3(thumbnailFile.path);
-    await this.mediaRepository.transcode(stagedIn.localPath, stagedPreview.localPath, previewOptions);
-    await this.mediaRepository.transcode(stagedIn.localPath, stagedThumb.localPath, thumbnailOptions);
+    await this.transcodeVideoThumbnail(stagedIn.localPath, stagedPreview.localPath, previewOptions, asset.id);
+    await this.transcodeVideoThumbnail(stagedIn.localPath, stagedThumb.localPath, thumbnailOptions, asset.id);
 
     const thumbhash = await this.mediaRepository.generateThumbhash(stagedPreview.localPath, {
       colorspace: image.colorspace,
@@ -684,6 +691,31 @@ export class MediaService extends BaseService {
       thumbhash,
       fullsizeDimensions: { width: mainVideoStream.width, height: mainVideoStream.height },
     };
+  }
+
+  private async transcodeVideoThumbnail(
+    input: string,
+    output: string,
+    command: TranscodeCommand,
+    assetId: string,
+  ): Promise<void> {
+    try {
+      await this.mediaRepository.transcode(input, output, command);
+      return;
+    } catch (error: any) {
+      // Some ffmpeg builds (e.g. Jellyfin 7.1.3) crash with SIGSEGV when the
+      // scene-detection thumbnail filter chain is combined for certain HEVC
+      // inputs. Retry once with a stripped-down filter chain that keeps
+      // scaling/tonemapping but drops thumbnail=/select= heuristics.
+      const fallback = stripThumbnailHeuristics(command);
+      if (!fallback) {
+        throw error;
+      }
+      this.logger.warn(
+        `ffmpeg thumbnail filter chain failed for asset ${assetId}, retrying with simplified filters: ${error?.message ?? error}`,
+      );
+      await this.mediaRepository.transcode(input, output, fallback);
+    }
   }
 
   @OnJob({ name: JobName.AssetEncodeVideoQueueAll, queue: QueueName.VideoConversion })

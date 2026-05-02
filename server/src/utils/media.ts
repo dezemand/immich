@@ -451,6 +451,41 @@ export class ThumbnailConfig extends BaseConfig {
   }
 }
 
+// Some ffmpeg builds crash (SIGSEGV) when the scene-detection thumbnail filter
+// chain is applied to certain HEVC inputs. This returns a simplified copy of
+// the command with `thumbnail=`/`select=` (and the leading `fps=...`/`trim=`/
+// `reverse` filters that exist only to feed those heuristics) stripped from
+// the `-vf` argument, leaving scaling/tonemapping intact. Returns null if no
+// simplification is possible.
+const THUMBNAIL_HEURISTIC_FILTER_PREFIXES = ['fps=', 'thumbnail=', 'select=', 'trim=', 'reverse'];
+// Split on top-level commas only — ffmpeg filter expressions can contain
+// escaped commas like `select=gt(scene\,0.1)`.
+const splitFilters = (chain: string): string[] => chain.split(/(?<!\\),/);
+export const stripThumbnailHeuristics = (command: TranscodeCommand): TranscodeCommand | null => {
+  let modified = false;
+  const outputOptions = command.outputOptions
+    .map((opt) => {
+      if (!opt.startsWith('-vf ')) {
+        return opt;
+      }
+      const filters = splitFilters(opt.slice(4));
+      const kept = filters.filter(
+        (f) => !THUMBNAIL_HEURISTIC_FILTER_PREFIXES.some((prefix) => f.startsWith(prefix) || f === prefix),
+      );
+      if (kept.length === filters.length) {
+        return opt;
+      }
+      modified = true;
+      return kept.length === 0 ? null : `-vf ${kept.join(',')}`;
+    })
+    .filter((opt): opt is string => opt !== null);
+
+  if (!modified) {
+    return null;
+  }
+  return { ...command, outputOptions };
+};
+
 export class H264Config extends BaseConfig {
   getOutputThreadOptions() {
     const options = super.getOutputThreadOptions();

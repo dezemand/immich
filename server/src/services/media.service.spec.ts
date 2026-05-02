@@ -621,6 +621,31 @@ describe(MediaService.name, () => {
       );
     });
 
+    it('should retry video thumbnail with simplified filter chain when ffmpeg crashes', async () => {
+      const asset = AssetFactory.from({ type: AssetType.Video, originalPath: '/original/path.ext' }).exif().build();
+      mocks.media.probe.mockResolvedValue(probeStub.videoStream2160p);
+      mocks.assetJob.getForGenerateThumbnailJob.mockResolvedValue(getForGenerateThumbnail(asset));
+      mocks.media.transcode
+        .mockRejectedValueOnce(new Error('ffmpeg exited with code 139 (SIGSEGV)'))
+        .mockResolvedValue();
+
+      await sut.handleGenerateThumbnails({ id: asset.id });
+
+      // first call uses the full filter chain, second call (retry) uses the simplified one
+      expect(mocks.media.transcode).toHaveBeenCalledTimes(3);
+      const firstCommand = mocks.media.transcode.mock.calls[0][2];
+      const secondCommand = mocks.media.transcode.mock.calls[1][2];
+      expect(firstCommand.outputOptions).toEqual(expect.arrayContaining([expect.stringContaining('thumbnail=12')]));
+      expect(secondCommand.outputOptions).toEqual(
+        expect.not.arrayContaining([expect.stringContaining('thumbnail=12')]),
+      );
+      expect(secondCommand.outputOptions).toEqual(
+        expect.not.arrayContaining([expect.stringContaining('select=gt(scene')]),
+      );
+      // scaling must still be present on the retry
+      expect(secondCommand.outputOptions).toEqual(expect.arrayContaining([expect.stringContaining('scale=-2:1440')]));
+    });
+
     it('should override reserved color metadata', async () => {
       const asset = AssetFactory.from({ type: AssetType.Video, originalPath: '/original/path.ext' }).exif().build();
       mocks.media.probe.mockResolvedValue(probeStub.videoStreamReserved);
